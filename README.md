@@ -7,38 +7,8 @@ plans its path to reduce map entropy.
 
 The full brief is in [`docs/ECE_4323_Project_Description_Flying_Robot_Camera.pdf`](docs/ECE_4323_Project_Description_Flying_Robot_Camera.pdf).
 
-## Repository layout
 
-```
-docs/      Project description and (later) reports / slides
-src/       Python source
-  workspace.py   Milestone 1: 2D workspace discretization (GridWorkspace)
-figures/   Figures kept for reports and presentations
-```
 
-## Setup
-
-```bash
-python -m venv .venv
-source .venv/bin/activate        # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-```
-
-## Running
-
-Milestone 1 demo (prints the grid summary and saves `milestone1_grid.png`):
-
-```bash
-python src/workspace.py
-```
-
-The parameters at the bottom of `src/workspace.py` are placeholders; replace them
-with the team's values.
-
-## Conventions
-
-- NED frame: x = North, y = East, ground plane at z = 0.
-- Altitude `z_t` is passed as a positive height above ground.
 
 ## Schedule
 
