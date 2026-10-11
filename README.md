@@ -51,7 +51,7 @@ gantt
 | Milestone | Due | Deliverables | Weight |
 |---|---|---|---|
 | 1. Setup | Oct 7 | Task 1: workspace discretization, oral demo | 20% |
-| 2. Basic operation | Nov 18 | Tasks 2–4: quadrotor simulation, camera model, EKF pose uncertainty, max-fusion, intermediate report | 20% |
+| 2. Basic operation | Nov 18 | Tasks 2–4: quadrotor simulation, camera model, EKF/Particle Filter pose uncertainty, max-fusion, intermediate report | 20% |
 | 3. Final demo | Dec 9 | Tasks 5–6: entropy-based path planning, mission completion, moving-target demo, presentation | 20% |
 | 4. Final report | Dec 21 | Final technical report | 40% |
 
