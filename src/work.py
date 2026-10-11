@@ -9,7 +9,8 @@ import matplotlib.pyplot as plt
 
 # set a workspace discretization
 
-
+# camera i think we should use -> https://www.robotshop.com/products/yahboom-yahboom-usb-industrial-ai-vision-camera-separate-camera?qd=f3c1473128dc16999d6625ff76df9b67
+# we can also use https://iflightrc.shop/products/racecam-mini-night-camera?v_id=variant_01KS6BBN1H4M5PK5X08CNQ18Q9
 
 
 
@@ -54,6 +55,17 @@ def body2NED(yaw, pitch, roll, vector_body):
 
     print(res_NED)
 
+#viginette function, measurement model confidence distribution
+
+def vis_confidence(x_i, y_i, z_ref, z_t):
+    p_max = 0.99
+    variance_cam = 0.3
+
+    p_ci = p_max * np.exp(- (x_i ** 2 * y_i ** 2) / (2*variance_cam)) * (z_ref / z_ref + np.abs(z_t - z_ref))
+
+    return p_ci
+
+
 m = 0.65 #kg
 l = 0.225 #moment arm len - meters
 i_xx = i_yy = 0.0086 #roll and pitch moments of inertia kg*m^2
@@ -65,13 +77,27 @@ k_m = 9e-7 #moment/drag coeff
 body2NED(90,30,60, [1,1,1])
 
 
-# x_max = 500 
-# y_max = 500
+
+z_t = 50 # quadrotor height
+fov_x = 81.8 # from camera datasheet
+fov_y = 66
 
 
 
-# xc = np.arange(0, x_max, res)
-# yc = np.arange(0, y_max, res)
+field_x = 2*z_t*np.tan(np.deg2rad(fov_x)/2) #how many meters the camera can see in the horizontal direction
+field_y = 2*z_t*np.tan(np.deg2rad(fov_y)/2)
+
+print(field_x * field_y)
+
+# particle filter code/ EKF code
+# EKF is faster, but particle filter is more accurate
+# imu = motion model, camera = measurement model
+
+# measurement model uncertainty
+
+
+
+# we have an initial position, p0
 
 
 res = 1 # dx and dy
@@ -83,21 +109,6 @@ xc = np.arange(0, x_max, res)
 yc = np.arange(0, y_max, res)
 xx, yy = np.meshgrid(xc,yc)
 zz = W1.x_func(xx) + W1.y_func(yy)
-
-
-
-# print(xc)
-# print(yc)
-
-
-
-# print(xx)
-
-#sc = 0.04
-
-# #zz = np.sin(np.sqrt(xx**2 + yy**2))/np.sqrt(xx**2 + yy**2) # height map
-#zz = ((xx*sc)**2 -  (yy*sc) ** 2)
-
 
 
 h = plt.contourf(xx, yy, zz)

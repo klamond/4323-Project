@@ -1,3 +1,9 @@
 https://aleksandarhaber.com/direction-cosine-matrix-tutorial-important-for-aerospace-and-robotics-engineering/#id2769230075
 
 https://oe5005.hydratech.in/lectures/lecture_02.html
+
+https://www.compu-tools.com/coordinate-converter/
+
+https://aleksandarhaber.com/clear-and-concise-particle-filter-tutorial-with-python-implementation-part-3-python-implementation-of-particle-filter-algorithm/
+
+https://inferensys.com/differences/vla-foundation-models-for-industrial-robotics/multi-modal-sensor-fusion-middleware/kalman-filter-vs-particle-filter-multi-sensor-state-estimation
