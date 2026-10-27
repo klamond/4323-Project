@@ -96,11 +96,11 @@ def update_A(stateVectorX, input, motionParams, omega_r): # takes in a x_dot aki
     sp = np.sin(pitch)
     sy = np.sin(yaw)
 
-    phi_2dot = (theta_dot * psi_dot * (i_xx - i_yy) - j_r * theta_dot * omega_r + u2) / i_xx
+    phi_2dot = (theta_dot * psi_dot * (i_yy - i_zz) - j_r * theta_dot * omega_r + u2) / i_xx
     
     theta_2dot = (phi_dot * psi_dot * (i_zz - i_xx) + j_r * phi_dot * omega_r + u3) / i_yy
 
-    psi_2dot = (phi_dot * theta_dot * (i_xx - i_yy) + u4)
+    psi_2dot = (phi_dot * theta_dot * (i_xx - i_yy) + u4) / i_zz
     
     z_2dot = g - u1 / m * (cr * cp)
     
@@ -112,6 +112,73 @@ def update_A(stateVectorX, input, motionParams, omega_r): # takes in a x_dot aki
 
     return result
     
+# Calculates the Jacobian matix
+
+def numerical_jacobian(x, u, params, omega_r):
+
+    n = len(x)
+    A = np.zeros((n, n))
+    eps = 1e-6
+
+    for i in range(n):
+
+        x_plus = x.copy()
+        x_minus = x.copy()
+
+        x_plus[i] += eps
+        x_minus[i] -= eps
+
+        f_plus = update_A(x_plus, u, params, omega_r)
+        f_minus = update_A(x_minus, u, params, omega_r)
+
+        A[:, i] = (f_plus - f_minus) / (2 * eps)
+
+    return A
+
+# Extended Kalmen Filter
+
+def EKF(x_est, P, u, measurement, Q, R, H, params, omega_r, dt):
+
+    # PREDICTION
+
+    # Predict state
+    x_pred = x_est + update_A(
+        x_est, u, params, omega_r
+    ) * dt
+
+    # Calculate Jacobian
+    A = numerical_jacobian(x_est, u, params, omega_r)
+
+    # Convert to discrete-time Jacobian
+    F = np.eye(12) + A * dt
+
+    # Predict covariance
+    P_pred = F @ P @ F.T + Q
+
+    # CORRECTION
+
+    # Predicted measurement
+    z_pred = H @ x_pred
+
+    # Innovation
+    innovation = measurement - z_pred
+
+    # Innovation covariance
+    S = H @ P_pred @ H.T + R
+
+    # Kalman gain
+    K = np.linalg.solve(S, H @ P_pred).T
+
+    # Correct state
+    x_new = x_pred + K @ innovation
+
+    # Correct covariance (Joseph form)
+    I = np.eye(12)
+
+    P_new = ((I - K @ H) @ P_pred @ (I - K @ H).T + K @ R @ K.T)
+
+    return x_new, P_new
+
 
 # Initial Variable declarations
 
@@ -146,12 +213,30 @@ initial_cnds = {
 # Noise
 
 # statistics of the process disturbance
-meanProcess=np.array([0,0])
-covarianceProcess=np.array([[0.002, 0],[0, 0.002]])
+# meanProcess=np.array([0,0])
+# covarianceProcess=np.array([[0.002, 0],[0, 0.002]])
  
 # statistics of the measurement noise
-meanNoise=np.array([0])
-covarianceNoise=np.array([[0.001]]) # this stuff is for later
+# meanNoise=np.array([0])
+# covarianceNoise=np.array([[0.001]]) # this stuff is for later
+
+
+# Initial state estimation uncertainty
+P = np.eye(12) * 0.1
+
+# Process noise covariance (discrete-time)
+Q = np.eye(12) * 0.0001
+
+# Measurement noise covariance
+R = np.diag([0.05**2, 0.05**2, 0.05**2])
+
+# Measurement matrix
+H = np.zeros((3, 12))
+
+H[0, 8] = 1   # X-position
+H[1, 10] = 1  # Y-position
+H[2, 6] = 1   # Z-position
+
 
 
 
@@ -168,7 +253,14 @@ time = np.arange(0, 100, dt) # ti, tf, dt
 
 u = np.array([-10,0,0,0]) # thrust, roll moment, pitch moment, yaw moment #TODO, check if we have the right rotation eqn. i don't know why veloity puts it down.
 
-x = np.array(list(initial_cnds.values()))
+# replaced by x_true (the actual drone state in your simulation) and x_est (the drone state estimated by the EKF).
+# x = np.array(list(initial_cnds.values()))
+x_true = np.array(list(initial_cnds.values()), dtype=float)
+x_est = x_true.copy()
+
+# x_est error
+x_est[8] += 0.5   # Estimated X-position is 0.5 m too high
+x_est[10] -= 0.5  # Estimated Y-position is 0.5 m too low
 
 x_dot = np.array([0] * 12)
 
@@ -178,27 +270,58 @@ x_log = np.zeros((len(time), 12)) # log of everything, NOT transposed, no accele
 
 # The motion model, how it moves (precisley, add uncert. later)
 
+# for t in range(len(time)):
+
+    # x_dot = update_A(x, u, params, 0)
+
+
+    # for k in range(12): #static, will not have to calculate len every time.
+        # x[k] = x[k] + x_dot[k] * dt
+
+    # x_log[t] = x
+
+
+# Logs for comparing actual and estimated states
+x_true_log = np.zeros((len(time), 12))
+x_est_log = np.zeros((len(time), 12))
+
+# Use positive hover thrust
+u = np.array([params['m'] * params['g'], 0, 0, 0])
+
 for t in range(len(time)):
 
-    x_dot = update_A(x, u, params, 0)
+    # 1. Update actual drone position
+    x_true = x_true + update_A(
+        x_true, u, params, omegaR
+    ) * dt
+
+    # 2. Generate noisy sensor measurements
+    measurement = H @ x_true + np.random.multivariate_normal(
+        np.zeros(3), R
+    )
+
+    # 3. Run EKF
+    x_est, P = EKF(
+        x_est, P, u, measurement,
+        Q, R, H, params, omegaR, dt
+    )
+
+    # 4. Store results
+    x_true_log[t] = x_true
+    x_est_log[t] = x_est
 
 
-    for k in range(12): #static, will not have to calculate len every time.
-        x[k] = x[k] + x_dot[k] * dt
+# y =[x_log[11][x] for x in range(12)]
 
-    x_log[t] = x
+# print(y)
 
-y =[x_log[11][x] for x in range(12)]
+# fig = plt.plot([x_log[x][10] for x in range(len(time))],[x_log[x][8] for x in range(len(time))])
+# plt.title("position, absolute")
+# plt.show()
 
-print(y)
-
-fig = plt.plot([x_log[x][10] for x in range(len(time))],[x_log[x][8] for x in range(len(time))])
-plt.title("position, absolute")
-plt.show()
-
-fig2 = plt.plot(time,[x_log[x][6] for x in range(len(time))])
-plt.title("height")
-plt.show()
+# fig2 = plt.plot(time,[x_log[x][6] for x in range(len(time))])
+# plt.title("height")
+# plt.show()
 
 
 # x_dot = [phi_dot phi_2dot theta_dot theta_2dot tri_dot tri_2dot z_dot z_2dot x_dot x_2dot y_dot y_2dot]T
@@ -249,4 +372,30 @@ plt.title('Discretized Workspace')
 plt.xlabel('X-Position')
 plt.ylabel('Y-Position')
 plt.savefig('contwrk.png', dpi = 600)
+# plt.show()
+
+
+# Actual X-position agaisnt the EKF estimate
+plt.figure()
+
+plt.plot(time, x_true_log[:, 8], label="Actual X-position")
+plt.plot(time, x_est_log[:, 8], "--", label="EKF Estimate")
+
+plt.xlabel("Time (s)")
+plt.ylabel("X-position (m)")
+plt.title("EKF Position Estimation")
+plt.legend()
+plt.grid(True)
+
+# plt.show()
+
+# Relative estimation error
+error_x = x_true_log[:, 8] - x_est_log[:, 8]
+
+plt.figure()
+plt.plot(time, error_x)
+plt.xlabel("Time (s)")
+plt.ylabel("X-position error (m)")
+plt.title("EKF Estimation Error")
+plt.grid(True)
 plt.show()
