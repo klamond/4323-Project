@@ -254,11 +254,11 @@ R = np.diag([r]*6)
 H = np.zeros((6, 12))
 # What is getting measured (IMU & GPS)?
 H[0, 0] = 1 # roll
-H[0, 2] = 1 # pitch
-H[0,4] = 1 # yaw
-H[0, 8] = 1   # X-position
-H[1, 10] = 1  # Y-position
-H[2, 6] = 1   # Z-position
+H[1, 2] = 1 # pitch
+H[2,4] = 1 # yaw
+H[3, 8] = 1   # X-position
+H[4, 10] = 1  # Y-position
+H[5, 6] = 1   # Z-position
 
 dt = 0.01
 
