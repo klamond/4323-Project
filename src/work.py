@@ -112,72 +112,87 @@ def update_A(stateVectorX, input, motionParams, omega_r): # takes in a x_dot aki
 
     return result
     
-# Calculates the Jacobian matix
+# Calculates the Jacobian matix, backward difference, good for control problems
 
-def numerical_jacobian(x, u, params, omega_r):
+def jacobian(x, u, params, omega_r):
 
     n = len(x)
     A = np.zeros((n, n))
-    eps = 1e-6
+    j_dt = 1e-6
+
+
+
+    f_current = update_A(x, u, params, omega_r)
+
 
     for i in range(n):
 
-        x_plus = x.copy()
         x_minus = x.copy()
+        
 
-        x_plus[i] += eps
-        x_minus[i] -= eps
+        x_minus[i] -= j_dt
+        
 
-        f_plus = update_A(x_plus, u, params, omega_r)
         f_minus = update_A(x_minus, u, params, omega_r)
+        
 
-        A[:, i] = (f_plus - f_minus) / (2 * eps)
+        A[:, i] = (f_current - f_minus) / (j_dt)
 
     return A
 
-# Extended Kalmen Filter
+# Extended Kalman Filter
 
-def EKF(x_est, P, u, measurement, Q, R, H, params, omega_r, dt):
+def EKF(x_est, P, u, measurement, Q, R, H, params, omega_r, dt): #measurement is z in the textbook.
 
     # PREDICTION
 
     # Predict state
-    x_pred = x_est + update_A(
+    x_pred = x_est + update_A( #returns the change in each variable.
         x_est, u, params, omega_r
     ) * dt
 
     # Calculate Jacobian
-    A = numerical_jacobian(x_est, u, params, omega_r)
-
+    A = jacobian(x_est, u, params, omega_r)
     # Convert to discrete-time Jacobian
     F = np.eye(12) + A * dt
 
-    # Predict covariance
-    P_pred = F @ P @ F.T + Q
+    # Predicted covariance
+    Sp = F @ P @ F.T + Q
 
     # CORRECTION
 
     # Predicted measurement
-    z_pred = H @ x_pred
+    h_x = H @ x_pred
 
     # Innovation
-    innovation = measurement - z_pred
+    innovation = measurement - h_x
 
     # Innovation covariance
-    S = H @ P_pred @ H.T + R
+    # S = H @ Sp @ H.T + R # what does this do???
 
-    # Kalman gain
-    K = np.linalg.solve(S, H @ P_pred).T
+    # # Kalman gain
+    # K = np.linalg.solve(S, H @ Sp).T
+
+
+    K = Sp @ H.T @ np.linalg.inv(H @ Sp @ H.T + R) #implementation from textbook
 
     # Correct state
     x_new = x_pred + K @ innovation
 
-    # Correct covariance (Joseph form)
+    # should take partial derivative if H is not constant (later idea)
+
+    # Correct covariance (Joseph form) don't have to do this, can just use the equation from the textbook.
+    # J. form has a higher compute time but is more numerically robust.
+
+    
+
+
+    #Textbook just does 
     I = np.eye(12)
 
-    P_new = ((I - K @ H) @ P_pred @ (I - K @ H).T + K @ R @ K.T)
+    S_new = ((I - K @ H) @ Sp @ (I - K @ H).T + K @ R @ K.T)
 
-    return x_new, P_new
+    return x_new, S_new
 
 
 # Initial Variable declarations
@@ -221,32 +236,35 @@ initial_cnds = {
 # covarianceNoise=np.array([[0.001]]) # this stuff is for later
 
 
-# Initial state estimation uncertainty
+
+
+
+r = 0.0025 # measurement noise covariance
+
+# Initial state estimation uncertainty, initial Sigma
 P = np.eye(12) * 0.1
 
 # Process noise covariance (discrete-time)
 Q = np.eye(12) * 0.0001
 
-# Measurement noise covariance
-R = np.diag([0.05**2, 0.05**2, 0.05**2])
+# Measurement noise covariance matrix
+R = np.diag([r]*6)
 
 # Measurement matrix
-H = np.zeros((3, 12))
-
+H = np.zeros((6, 12))
+# What is getting measured (IMU & GPS)?
+H[0, 0] = 1 # roll
+H[0, 2] = 1 # pitch
+H[0,4] = 1 # yaw
 H[0, 8] = 1   # X-position
 H[1, 10] = 1  # Y-position
 H[2, 6] = 1   # Z-position
-
-
-
 
 dt = 0.01
 
 omegaR = 0
 
-
 # These should technically be transposed, we just have to keep this in mind
-# Definitions for the state vectors used in the 
 
 
 time = np.arange(0, 100, dt) # ti, tf, dt
@@ -258,15 +276,9 @@ u = np.array([-10,0,0,0]) # thrust, roll moment, pitch moment, yaw moment #TODO,
 x_true = np.array(list(initial_cnds.values()), dtype=float)
 x_est = x_true.copy()
 
-# x_est error
+# x_est error, for testing, remove later.
 x_est[8] += 0.5   # Estimated X-position is 0.5 m too high
 x_est[10] -= 0.5  # Estimated Y-position is 0.5 m too low
-
-x_dot = np.array([0] * 12)
-
-x_log = np.zeros((len(time), 12)) # log of everything, NOT transposed, no acceleration recorded
-
-
 
 # The motion model, how it moves (precisley, add uncert. later)
 
@@ -293,11 +305,13 @@ for t in range(len(time)):
     # 1. Update actual drone position
     x_true = x_true + update_A(
         x_true, u, params, omegaR
-    ) * dt
+    ) * dt + np.random.multivariate_normal(
+        np.zeros(12), Q
+    )
 
     # 2. Generate noisy sensor measurements
     measurement = H @ x_true + np.random.multivariate_normal(
-        np.zeros(3), R
+        np.zeros(6), R
     )
 
     # 3. Run EKF
@@ -310,6 +324,8 @@ for t in range(len(time)):
     x_true_log[t] = x_true
     x_est_log[t] = x_est
 
+
+print(jacobian(x_est, u, params, omegaR))
 
 # y =[x_log[11][x] for x in range(12)]
 
