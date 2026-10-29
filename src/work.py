@@ -57,11 +57,11 @@ def body2NED(yaw, pitch, roll, vector_body):
 
 #viginette function, measurement model confidence distribution
 
-def vis_confidence(x_i, y_i, z_ref, z_t):
+def vis_confidence(x_i, y_i, z_ref, z_t): # z_t is the quadrotor height, 
     p_max = 0.99
     variance_cam = 0.3
 
-    p_ci = p_max * np.exp(- (x_i ** 2 * y_i ** 2) / (2*variance_cam)) * (z_ref / z_ref + np.abs(z_t - z_ref))
+    p_ci = p_max * np.exp(- (x_i ** 2 + y_i ** 2) / (2*variance_cam)) * (z_ref / (z_ref + np.abs(z_t - z_ref)))
 
     return p_ci
 
@@ -142,7 +142,7 @@ def jacobian(x, u, params, omega_r):
 
 # Extended Kalman Filter
 
-def EKF(x_est, P, u, measurement, Q, R, H, params, omega_r, dt): #measurement is z in the textbook.
+def EKF(x_est, P, u, measurement, Q, R, H, params, omega_r, dt): #measurement is z in the textbook. # P is a different meaning for sigma
 
     # PREDICTION
 
@@ -212,7 +212,7 @@ params = {
 initial_cnds = {
     'roll' : 0, # in radians
     'roll_d' : 0,
-    'pitch' : 0.1,
+    'pitch' : 0.01,
     'pitch_d' : 0,
     'yaw' : 0,
     'yaw_d' : 0,
@@ -237,7 +237,7 @@ initial_cnds = {
 
 
 
-
+res = 1 # dx and dy (cell size(m))
 
 r = 0.0025 # measurement noise covariance
 
@@ -267,7 +267,13 @@ omegaR = 0
 # These should technically be transposed, we just have to keep this in mind
 
 
-time = np.arange(0, 100, dt) # ti, tf, dt
+
+fov_x = 81.8 # from camera datasheet
+fov_y = 66
+
+
+
+time = np.arange(0, 7, dt) # ti, tf, dt
 
 u = np.array([-10,0,0,0]) # thrust, roll moment, pitch moment, yaw moment #TODO, check if we have the right rotation eqn. i don't know why veloity puts it down.
 
@@ -275,10 +281,6 @@ u = np.array([-10,0,0,0]) # thrust, roll moment, pitch moment, yaw moment #TODO,
 # x = np.array(list(initial_cnds.values()))
 x_true = np.array(list(initial_cnds.values()), dtype=float)
 x_est = x_true.copy()
-
-# x_est error, for testing, remove later.
-x_est[8] += 0.5   # Estimated X-position is 0.5 m too high
-x_est[10] -= 0.5  # Estimated Y-position is 0.5 m too low
 
 # The motion model, how it moves (precisley, add uncert. later)
 
@@ -293,54 +295,107 @@ x_est[10] -= 0.5  # Estimated Y-position is 0.5 m too low
     # x_log[t] = x
 
 
+zref = 10 #idk wtf this means, its the designed altitude
+
+
 # Logs for comparing actual and estimated states
 x_true_log = np.zeros((len(time), 12))
 x_est_log = np.zeros((len(time), 12))
 
 # Use positive hover thrust
-u = np.array([params['m'] * params['g'], 0, 0, 0])
+u = np.array([params['m'] * params['g'] / 4, 0, 0, 0]) # have to  control this
+
+
+prbwrk = np.arange(0, 500, 0)
+
+x_max = W1.x_dim
+y_max = W1.y_dim
+
+xc = np.arange(0, x_max, res)
+yc = np.arange(0, y_max, res)
+xx, yy = np.meshgrid(xc,yc)
+#zz = W1.x_func(xx) + W1.y_func(yy) disable height map for now
 
 for t in range(len(time)):
 
-    # 1. Update actual drone position
-    x_true = x_true + update_A(
+    
+    x_true = x_true + update_A( #update position
         x_true, u, params, omegaR
     ) * dt + np.random.multivariate_normal(
         np.zeros(12), Q
     )
 
-    # 2. Generate noisy sensor measurements
-    measurement = H @ x_true + np.random.multivariate_normal(
+    
+    measurement = H @ x_true + np.random.multivariate_normal( #noise
         np.zeros(6), R
     )
 
-    # 3. Run EKF
-    x_est, P = EKF(
+    
+    x_est, P = EKF( # P is covariance. should probably be 'S' to allign with the notes
         x_est, P, u, measurement,
         Q, R, H, params, omegaR, dt
     )
 
-    # 4. Store results
-    x_true_log[t] = x_true
+    
+    x_true_log[t] = x_true #base camera measurement off of true or estimate?
     x_est_log[t] = x_est
 
+    
 
-print(jacobian(x_est, u, params, omegaR))
+    #create grid around x, + 50% FOV to either side
 
-# y =[x_log[11][x] for x in range(12)]
+    height = x_est[6]
+    x_pos = x_est[8]
+    y_pos = x_est[10]
 
-# print(y)
+    field_x = 2*height*np.tan(np.deg2rad(fov_x)/2) #how many meters the camera can see in the horizontal direction, ect.
+    field_y = 2*height*np.tan(np.deg2rad(fov_y)/2) # calculate relative local field, then superimpose that onto the model
 
-# fig = plt.plot([x_log[x][10] for x in range(len(time))],[x_log[x][8] for x in range(len(time))])
-# plt.title("position, absolute")
-# plt.show()
+    halfx = int(field_x/2)
+    halfy = int(field_y/2)
 
-# fig2 = plt.plot(time,[x_log[x][6] for x in range(len(time))])
-# plt.title("height")
-# plt.show()
+    xvals = np.arange(-halfx, +halfx, res)
+    yvals = np.arange(-halfy, +halfy, res)
+
+    xvv, yvv = np.meshgrid(xvals, yvals)
+
+    cells_x = xvv + x_pos
+    cells_y = xvv + y_pos
+
+    prb = vis_confidence(xvv, yvv, zref, height) #calculates confidence for each cell, a confidence map for the relative frame
+
+    W1[cells_x][cells_y] += prb
+    
+    # ix = np.floor((cells_x - 0) / res).astype(int)
+    # iy = np.floor((cells_y - 0) / res).astype(int)
+    # valid = (P > thresh) & (ix >= 0) & (ix < nx) & (iy >= 0) & (iy < ny)
+    # np.maximum.at(W, (ix[valid], iy[valid]), P[valid])
+    
 
 
-# x_dot = [phi_dot phi_2dot theta_dot theta_2dot tri_dot tri_2dot z_dot z_2dot x_dot x_2dot y_dot y_2dot]T
+    
+
+    
+
+print(xvals)
+print(yvals)
+
+
+
+plt.figure()
+
+prb_masked = np.ma.masked_less(prb, 1e-6)
+
+prbplt = plt.contourf(xvv, yvv, prb_masked)
+plt.colorbar(label = "Confidence")
+
+#plt.plot(xvv,yvv, marker='.', color='k', linestyle='none')
+
+
+
+
+print(x_true_log[t]) #do we measure noise for estimation?
+
 
 
 
@@ -350,14 +405,11 @@ body2NED(90,30,60, [1,1,1])
 
 
 
-z_t = 50 # quadrotor height
-fov_x = 81.8 # from camera datasheet
-fov_y = 66
 
 
 
-field_x = 2*z_t*np.tan(np.deg2rad(fov_x)/2) #how many meters the camera can see in the horizontal direction
-field_y = 2*z_t*np.tan(np.deg2rad(fov_y)/2)
+
+
 
 print(f"{field_x}, {field_y}")
 
@@ -370,16 +422,12 @@ print(f"{field_x}, {field_y}")
 # we have an initial position, p0
 
 
-res = 1 # dx and dy
 
-x_max = W1.x_dim
-y_max = W1.y_dim
 
-xc = np.arange(0, x_max, res)
-yc = np.arange(0, y_max, res)
-xx, yy = np.meshgrid(xc,yc)
-zz = W1.x_func(xx) + W1.y_func(yy)
 
+
+
+plt.figure()
 
 h = plt.contourf(xx, yy, zz)
 plt.colorbar(label = 'Z-Position')
@@ -414,4 +462,10 @@ plt.xlabel("Time (s)")
 plt.ylabel("X-position error (m)")
 plt.title("EKF Estimation Error")
 plt.grid(True)
+
+
+plt.figure()
+plt.plot(x_true_log[:, 8], x_true_log[:, 10])
+
+
 plt.show()
