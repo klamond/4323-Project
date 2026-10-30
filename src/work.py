@@ -1,5 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
+import time
 
 # Camera used -> https://www.robotshop.com/products/yahboom-yahboom-usb-industrial-ai-vision-camera-separate-camera?qd=f3c1473128dc16999d6625ff76df9b67
 # Alternative option -> https://iflightrc.shop/products/racecam-mini-night-camera?v_id=variant_01KS6BBN1H4M5PK5X08CNQ18Q9
@@ -32,11 +33,11 @@ class workspace:
 
 class camera:
 
-    def __init__(fovx, fovy):
-        pass
-
-
-
+    def __init__(self, fovx, fovy, variance, zref):
+        self.fovx = fovx
+        self.fovy = fovy
+        self.variance = variance
+        self.zref = zref
 
 
 def body2NED(yaw, pitch, roll, vector_body):
@@ -68,14 +69,13 @@ def body2NED(yaw, pitch, roll, vector_body):
 
 
 
-def vis_confidence(x_i, y_i, z_ref, z_t): # z_t is the quadrotor height, 
+def vis_confidence(x_i, y_i, z_t, camera_c): # z_t is the quadrotor height, 
 
     """Viginette function, measurement model confidence distribution"""
 
     p_max = 0.99
-    variance_cam = 1.0
 
-    p_ci = p_max * np.exp(- (x_i ** 2 + y_i ** 2) / (2*variance_cam)) * (z_ref / (z_ref + np.abs(z_t - z_ref))) # Given equation
+    p_ci = p_max * np.exp(- (x_i ** 2 + y_i ** 2) / (2*camera_c.variance)) * (camera_c.zref / (camera_c.zref + np.abs(z_t - camera_c.zref))) # Given equation
 
     p_scaled = 0.5 + 0.5 * p_ci # Scales probablility to within [0.5,1]. I think this is what he wants?
 
@@ -201,8 +201,6 @@ def EKF(x_est, P, u, measurement, Q, R, H, params, omega_r, dt):
     # Innovation
     innovation = measurement - h_x
 
-    
-
     # Kalman gain
 
     # Innovation covariance
@@ -226,7 +224,7 @@ def EKF(x_est, P, u, measurement, Q, R, H, params, omega_r, dt):
     return x_new, S_new
 
 
-def camera_ft(state_vec, workspace):
+def camera_ft(state_vec, workspace_c, camera_c):
     """Camera footprint size and probablility calculator. Rectangular footprint"""
     # Note: do NOT try to factor pitch & roll into implementation.
 
@@ -237,14 +235,14 @@ def camera_ft(state_vec, workspace):
 
     # Calculate relative local field, then superimpose that onto the workspace
 
-    field_x = 2*height*np.tan(np.deg2rad(fov_x)/2) #how many meters the camera can see in the horizontal direction, ect.
-    field_y = 2*height*np.tan(np.deg2rad(fov_y)/2) 
+    field_x = 2*height*np.tan(np.deg2rad(camera_c.fovx)/2) #how many meters the camera can see in the horizontal direction, ect.
+    field_y = 2*height*np.tan(np.deg2rad(camera_c.fovy)/2) 
 
     halfx = int(field_x/2)
     halfy = int(field_y/2)
 
-    xvals = np.arange(-halfx, +halfx, res)
-    yvals = np.arange(-halfy, +halfy, res)
+    xvals = np.arange(-halfx, +halfx, workspace_c.res)
+    yvals = np.arange(-halfy, +halfy, workspace_c.res)
 
     xvv, yvv = np.meshgrid(xvals, yvals)
 
@@ -265,14 +263,17 @@ def camera_ft(state_vec, workspace):
     x_world = x_rot + x_pos
     y_world = y_rot + y_pos
     
-    prb = vis_confidence(xvv, yvv, zref, height) #calculates confidence for each cell, a confidence map for the relative frame
+    prb = vis_confidence(xvv, yvv, height, camera_c) #calculates confidence for each cell, a confidence map for the relative frame
     
-    ix = np.rint((x_world) / res).astype(np.int32)
-    iy = np.rint((y_world) / res).astype(np.int32)
+    ix = np.rint((x_world) / workspace_c.res).astype(np.int32)
+    iy = np.rint((y_world) / workspace_c.res).astype(np.int32)
 
-    valid = (ix >= 0) & (ix < workspace.nx) & (iy >= 0) & (iy < workspace.ny) #finds the cells that are valid, so we dont add up a bunch of 0s
+    valid = (ix >= 0) & (ix < workspace_c.nx) & (iy >= 0) & (iy < workspace_c.ny) #finds the cells that are valid, so we dont add up a bunch of 0s
 
-    np.maximum.at(workspace.confidence, (ix[valid], iy[valid]), prb[valid]) # Max fusion, as required by the assignment
+    np.maximum.at(workspace_c.confidence, (ix[valid], iy[valid]), prb[valid]) # Max fusion, as required by the assignment
+
+
+start_time = time.time()
 
     
 # Initial Variable declarations
@@ -304,11 +305,11 @@ initial_cnds = {
     'y_d' : 0,
 }
 
+
+# I/O, interface with objects
+
+C1 = camera(fovx=81.8, fovy=66, variance=10, zref=15)
 W1 = workspace(500, 500, lambda x : (x*0.04)**2, lambda y : - (y*0.04)**2, 1)
-
-res = 1 # dx and dy (cell size(m))
-
-r = 0.0025 # measurement noise covariance
 
 # Initial state estimation uncertainty, initial Sigma
 P = np.eye(12) * 0.1
@@ -317,29 +318,28 @@ P = np.eye(12) * 0.1
 Q = np.eye(12) * 0.0001
 
 # Measurement noise covariance matrix
+r = 0.0025 # measurement noise covariance
 R = np.eye(6) * r
 
 # Measurement matrix
 H = np.zeros((6, 12))
 
 # What is getting measured (IMU & GPS)?
-H[0, 0] = 1 # roll
-H[1, 2] = 1 # pitch
-H[2,4] = 1 # yaw
-H[3, 8] = 1   # X-position
-H[4, 10] = 1  # Y-position
-H[5, 6] = 1   # Z-position
+H[0, 0] = 1 # roll - Index 0
+H[1, 2] = 1 # pitch - Index 2
+H[2,4] = 1 # yaw - Index 4
+H[3, 8] = 1   # X-position - Index 8
+H[4, 10] = 1  # Y-position - Index 10
+H[5, 6] = 1   # Z-position - Index 6
 
 dt = 0.01
 
 omegaR = 0
 
 # Values from camera datasheet
-fov_x = 81.8 # gets used by camera_ft
-fov_y = 66
 zref = 10 #idk wtf this means, its the designed altitude
 
-time = np.arange(0, 15, dt) # (ti, tf, dt). Makes an array of time values
+timeArr = np.arange(0, 15, dt) # (ti, tf, dt). Makes an array of time values
 
 # replaced by x_true (the actual drone state in your simulation) and x_est (the drone state estimated by the EKF).
 # x = np.array(list(initial_cnds.values()))
@@ -351,14 +351,14 @@ x_est = x_true.copy()
 
 
 # Logs for comparing actual and estimated states
-x_true_log = np.zeros((len(time), 12))
-x_est_log = np.zeros((len(time), 12))
+x_true_log = np.zeros((len(timeArr), 12))
+x_est_log = np.zeros((len(timeArr), 12))
 
 # Use positive hover thrust for initial control input
 u = np.array([params['m'] * params['g'], 0, 0, 0]) # Control this
 
 
-for t in range(len(time)):
+for t in range(len(timeArr)):
 
     
     x_true = x_true + update_A( #update position
@@ -379,7 +379,7 @@ for t in range(len(time)):
     )
 
 
-    camera_ft(x_est, W1)
+    camera_ft(x_est, W1, C1)
 
 
     
@@ -390,6 +390,13 @@ for t in range(len(time)):
 
     #create grid around x, + 50% FOV to either side
 
+
+total_time = time.time() - start_time
+avg_conf = np.mean(W1.confidence)
+
+
+print(f"Average Confidence: {avg_conf}")
+print(f"Simulation took {total_time} seconds")
 
 #plt.plot(xvv,yvv, marker='.', color='k', linestyle='none')
 
@@ -418,8 +425,8 @@ plt.ylabel('Y-Position')
 # Actual X-position agaisnt the EKF estimate
 plt.figure()
 
-plt.plot(time, x_true_log[:, 8], label="Actual X-position")
-plt.plot(time, x_est_log[:, 8], "--", label="EKF Estimate")
+plt.plot(timeArr, x_true_log[:, 8], label="Actual X-position")
+plt.plot(timeArr, x_est_log[:, 8], "--", label="EKF Estimate")
 
 plt.xlabel("Time (s)")
 plt.ylabel("X-position (m)")
@@ -433,7 +440,7 @@ plt.grid(True)
 error_x = x_true_log[:, 8] - x_est_log[:, 8]
 
 plt.figure()
-plt.plot(time, error_x)
+plt.plot(timeArr, error_x)
 plt.xlabel("Time (s)")
 plt.ylabel("X-position error (m)")
 plt.title("EKF Estimation Error")
@@ -444,4 +451,6 @@ plt.figure()
 plt.plot(x_true_log[:, 8], x_true_log[:, 10])
 plt.title("X-Y graph")
 plt.show()
+
+
 
