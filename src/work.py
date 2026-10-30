@@ -1,42 +1,53 @@
-
 import numpy as np
 import matplotlib.pyplot as plt
 
-
-# take in a given workspace. Should have x/y dimension, equation definine x axis topography, equation definine y axis topography
-
-# start off with an example x-function
-
-# set a workspace discretization
-
-# camera i think we should use -> https://www.robotshop.com/products/yahboom-yahboom-usb-industrial-ai-vision-camera-separate-camera?qd=f3c1473128dc16999d6625ff76df9b67
-# we can also use https://iflightrc.shop/products/racecam-mini-night-camera?v_id=variant_01KS6BBN1H4M5PK5X08CNQ18Q9
+# Camera used -> https://www.robotshop.com/products/yahboom-yahboom-usb-industrial-ai-vision-camera-separate-camera?qd=f3c1473128dc16999d6625ff76df9b67
+# Alternative option -> https://iflightrc.shop/products/racecam-mini-night-camera?v_id=variant_01KS6BBN1H4M5PK5X08CNQ18Q9
 
 
-
-class ext_workspace:
+class workspace:
     
-
-    def __init__(self, x_dim, y_dim, x_func, y_func):
-
-
+    def __init__(self, x_dim, y_dim, x_func, y_func, res): #initialization function
 
         self.x_dim = x_dim
         self.y_dim = y_dim
         self.x_func = x_func # function that CONTAINS x, ect.
         self.y_func = y_func # use lambda statents in workspace defn.
+        self.res = res
 
-W1 = ext_workspace(500, 500, lambda x : (x*0.04)**2, lambda y : - (y*0.04)**2)
+        # Everything within the object is computed
+        # All relevant data should be contained in object for easy acess
+
+
+        # nx/ny signfies the number of grid cells.
+        self.nx = int(x_dim / self.res)
+        self.ny = int(y_dim / self.res)
+        self.confidence = np.ones((self.nx, self.ny), dtype = float) * 0.5 # Confidence starts at 0.5
+
+        self.xc = np.arange(0, x_dim, self.res) 
+        self.yc = np.arange(0, y_dim, self.res)
+        self.xx, self.yy = np.meshgrid(self.xc,self.yc, indexing = 'ij')
+        self.zz = self.x_func(self.xx) + self.y_func(self.yy) # Store height map within object
+
+
+class camera:
+
+    def __init__(fovx, fovy):
+        pass
 
 
 
 
 
-# Function that essensially converts between realative and absolute headings. can use for velocity, ect.
-# vector_body defines the vector that is in the body frame. look in the image in /docs for more information
 def body2NED(yaw, pitch, roll, vector_body):
 
-    y = np.deg2rad(yaw) #movement about the axis
+    """Converts between realative (body) and absolute headings (NED)"""
+
+    # Probably a redundant function
+
+    # vector_body defines the vector that is in the body frame. look in the image in /docs for more information
+
+    y = np.deg2rad(yaw)
     p = np.deg2rad(pitch)
     r = np.deg2rad(roll)
 
@@ -53,20 +64,35 @@ def body2NED(yaw, pitch, roll, vector_body):
     res_NED =  _R @ vector_body
     #to go the other way, just use the transpose of R
 
-    print(res_NED)
+    return res_NED
 
-#viginette function, measurement model confidence distribution
+
 
 def vis_confidence(x_i, y_i, z_ref, z_t): # z_t is the quadrotor height, 
+
+    """Viginette function, measurement model confidence distribution"""
+
     p_max = 0.99
-    variance_cam = 0.3
+    variance_cam = 1.0
 
-    p_ci = p_max * np.exp(- (x_i ** 2 + y_i ** 2) / (2*variance_cam)) * (z_ref / (z_ref + np.abs(z_t - z_ref)))
+    p_ci = p_max * np.exp(- (x_i ** 2 + y_i ** 2) / (2*variance_cam)) * (z_ref / (z_ref + np.abs(z_t - z_ref))) # Given equation
 
-    return p_ci
+    p_scaled = 0.5 + 0.5 * p_ci # Scales probablility to within [0.5,1]. I think this is what he wants?
+
+    return p_scaled
 
 
 def update_A(stateVectorX, input, motionParams, omega_r): # takes in a x_dot akin to the one in the overleaf doc. 12 rows
+
+    """Finds your x_dot, so that you can add it to your state space model.
+    Accepts (12,) or (N, 12). Returns (12,) or (N, 12)."""
+
+    
+
+    # allow scalar-state calls and batched calls through the same function
+    single = (stateVectorX.ndim == 1) # Make sure to leave this in, keeps things working
+    X = np.atleast_2d(stateVectorX)          # (N, 12)
+
     # need to find the jacobian to make an actual "A" matrix, as our system is nonlinear
     # set the _dot values instead of copying for readability putposes
     # input is a tuple, could be a list
@@ -78,16 +104,16 @@ def update_A(stateVectorX, input, motionParams, omega_r): # takes in a x_dot aki
     u3 = input[2]
     u4 = input[3]
 
-    roll = stateVectorX[0]
-    pitch = stateVectorX[2]
-    yaw = stateVectorX[4]
+    roll = X[:,0]
+    pitch = X[:,2]
+    yaw = X[:,4]
 
-    phi_dot = stateVectorX[1]
-    theta_dot = stateVectorX[3]
-    psi_dot = stateVectorX[5]
-    z_dot = stateVectorX[7]
-    x_dot = stateVectorX[9]
-    y_dot = stateVectorX[11]
+    phi_dot = X[:,1]
+    theta_dot = X[:,3]
+    psi_dot = X[:,5]
+    z_dot = X[:,7]
+    x_dot = X[:,9]
+    y_dot = X[:,11]
 
     cr = np.cos(roll)
     cp = np.cos(pitch)
@@ -108,43 +134,51 @@ def update_A(stateVectorX, input, motionParams, omega_r): # takes in a x_dot aki
     
     y_2dot = u1 / m * (cy * sr - cr * sy * sp)
 
-    result = np.array([phi_dot, phi_2dot, theta_dot, theta_2dot, psi_dot, psi_2dot, z_dot, z_2dot, x_dot, x_2dot, y_dot, y_2dot])
+    result = np.array([phi_dot, phi_2dot, theta_dot, theta_2dot, psi_dot, psi_2dot, z_dot, z_2dot, x_dot, x_2dot, y_dot, y_2dot]).T
 
-    return result
+    return result[0] if single else result
     
-# Calculates the Jacobian matix, backward difference, good for control problems
+
 
 def jacobian(x, u, params, omega_r):
+
+    """Take the Jacobian of the state vecotor. Using the euler backward difference formula.
+    Performed by passing the entire matrix to update_A"""
 
     n = len(x)
     A = np.zeros((n, n))
     j_dt = 1e-6
 
-
+    x_minus = np.tile(x,(n,1))
+    for i in range(n):
+        x_minus[i,i] -= j_dt
 
     f_current = update_A(x, u, params, omega_r)
-
+    f_minus = update_A(x_minus, u, params, omega_r)
 
     for i in range(n):
+        A[:, i] = (f_current - f_minus[i])/j_dt
 
-        x_minus = x.copy()
-        
 
-        x_minus[i] -= j_dt
-        
+    # OLD IMPLEMENTATION (for reference)
 
-        f_minus = update_A(x_minus, u, params, omega_r)
-        
+    # f_current = update_A(x, u, params, omega_r)
 
-        A[:, i] = (f_current - f_minus) / (j_dt)
+    # for i in range(n):
+    #     x_minus = x.copy()
+    #     x_minus[i] -= j_dt
+    #     f_minus = update_A(x_minus, u, params, omega_r)     
+    #     A[:, i] = (f_current - f_minus) / (j_dt)
 
     return A
 
-# Extended Kalman Filter
 
-def EKF(x_est, P, u, measurement, Q, R, H, params, omega_r, dt): #measurement is z in the textbook. # P is a different meaning for sigma
 
-    # PREDICTION
+def EKF(x_est, P, u, measurement, Q, R, H, params, omega_r, dt):
+
+    """Extended Kalman Filter implementation. With reference to class notes, P is sigma, and measurement z."""
+
+    # 1. PREDICTION UPDATE
 
     # Predict state
     x_pred = x_est + update_A( #returns the change in each variable.
@@ -159,7 +193,7 @@ def EKF(x_est, P, u, measurement, Q, R, H, params, omega_r, dt): #measurement is
     # Predicted covariance
     Sp = F @ P @ F.T + Q
 
-    # CORRECTION
+    # 2. MEASUREMENT UPDATE
 
     # Predicted measurement
     h_x = H @ x_pred
@@ -167,27 +201,24 @@ def EKF(x_est, P, u, measurement, Q, R, H, params, omega_r, dt): #measurement is
     # Innovation
     innovation = measurement - h_x
 
+    
+
+    # Kalman gain
+
     # Innovation covariance
-    # S = H @ Sp @ H.T + R # what does this do???
+    S = H @ Sp @ H.T + R # what does this do???
 
-    # # Kalman gain
-    # K = np.linalg.solve(S, H @ Sp).T
+    K = np.linalg.solve(S, H @ Sp).T # implementation using linalg.solve method
 
 
-    K = Sp @ H.T @ np.linalg.inv(H @ Sp @ H.T + R) #implementation from textbook
+    # K = Sp @ H.T @ np.linalg.inv(H @ Sp @ H.T + R) #implementation from textbook, does the same thing as above
 
     # Correct state
     x_new = x_pred + K @ innovation
 
-    # should take partial derivative if H is not constant (later idea)
 
-    # Correct covariance (Joseph form) don't have to do this, can just use the equation from the textbook.
-    # J. form has a higher compute time but is more numerically robust.
+    # Correct covariance (Joseph form) higher compute time than textbook but is more numerically robust
 
-    
-
-
-    #Textbook just does 
     I = np.eye(12)
 
     S_new = ((I - K @ H) @ Sp @ (I - K @ H).T + K @ R @ K.T)
@@ -195,6 +226,55 @@ def EKF(x_est, P, u, measurement, Q, R, H, params, omega_r, dt): #measurement is
     return x_new, S_new
 
 
+def camera_ft(state_vec, workspace):
+    """Camera footprint size and probablility calculator. Rectangular footprint"""
+    # Note: do NOT try to factor pitch & roll into implementation.
+
+    height = state_vec[6]
+    x_pos = state_vec[8]
+    y_pos = state_vec[10]
+    yaw = state_vec[4]
+
+    # Calculate relative local field, then superimpose that onto the workspace
+
+    field_x = 2*height*np.tan(np.deg2rad(fov_x)/2) #how many meters the camera can see in the horizontal direction, ect.
+    field_y = 2*height*np.tan(np.deg2rad(fov_y)/2) 
+
+    halfx = int(field_x/2)
+    halfy = int(field_y/2)
+
+    xvals = np.arange(-halfx, +halfx, res)
+    yvals = np.arange(-halfy, +halfy, res)
+
+    xvv, yvv = np.meshgrid(xvals, yvals)
+
+    c_yaw = np.cos(yaw)
+    s_yaw = np.sin(yaw)
+
+
+    # Same rotation method used as on quiz 3, not considering trapezoidal footprint due to complexity and other factors.
+    # Can do same thing with a transformation matrix
+
+
+    x_rot = c_yaw * xvv - s_yaw * yvv
+    y_rot = s_yaw * xvv + c_yaw * yvv
+
+
+    # The matrix for graph rotation 
+
+    x_world = x_rot + x_pos
+    y_world = y_rot + y_pos
+    
+    prb = vis_confidence(xvv, yvv, zref, height) #calculates confidence for each cell, a confidence map for the relative frame
+    
+    ix = np.rint((x_world) / res).astype(np.int32)
+    iy = np.rint((y_world) / res).astype(np.int32)
+
+    valid = (ix >= 0) & (ix < workspace.nx) & (iy >= 0) & (iy < workspace.ny) #finds the cells that are valid, so we dont add up a bunch of 0s
+
+    np.maximum.at(workspace.confidence, (ix[valid], iy[valid]), prb[valid]) # Max fusion, as required by the assignment
+
+    
 # Initial Variable declarations
 
 params = {
@@ -212,30 +292,19 @@ params = {
 initial_cnds = {
     'roll' : 0, # in radians
     'roll_d' : 0,
-    'pitch' : 0.01,
+    'pitch' : 0.1,
     'pitch_d' : 0,
     'yaw' : 0,
     'yaw_d' : 0,
-    'z' : 0,
+    'z' : 10,
     'z_d' : 0,
-    'x' : 1,
+    'x' : 250,
     'x_d' : 0,
-    'y' : 0,
+    'y' : 250,
     'y_d' : 0,
 }
 
-
-# Noise
-
-# statistics of the process disturbance
-# meanProcess=np.array([0,0])
-# covarianceProcess=np.array([[0.002, 0],[0, 0.002]])
- 
-# statistics of the measurement noise
-# meanNoise=np.array([0])
-# covarianceNoise=np.array([[0.001]]) # this stuff is for later
-
-
+W1 = workspace(500, 500, lambda x : (x*0.04)**2, lambda y : - (y*0.04)**2, 1)
 
 res = 1 # dx and dy (cell size(m))
 
@@ -248,10 +317,11 @@ P = np.eye(12) * 0.1
 Q = np.eye(12) * 0.0001
 
 # Measurement noise covariance matrix
-R = np.diag([r]*6)
+R = np.eye(6) * r
 
 # Measurement matrix
 H = np.zeros((6, 12))
+
 # What is getting measured (IMU & GPS)?
 H[0, 0] = 1 # roll
 H[1, 2] = 1 # pitch
@@ -264,57 +334,29 @@ dt = 0.01
 
 omegaR = 0
 
-# These should technically be transposed, we just have to keep this in mind
-
-
-
-fov_x = 81.8 # from camera datasheet
+# Values from camera datasheet
+fov_x = 81.8 # gets used by camera_ft
 fov_y = 66
+zref = 10 #idk wtf this means, its the designed altitude
 
-
-
-time = np.arange(0, 7, dt) # ti, tf, dt
-
-u = np.array([-10,0,0,0]) # thrust, roll moment, pitch moment, yaw moment #TODO, check if we have the right rotation eqn. i don't know why veloity puts it down.
+time = np.arange(0, 15, dt) # (ti, tf, dt). Makes an array of time values
 
 # replaced by x_true (the actual drone state in your simulation) and x_est (the drone state estimated by the EKF).
 # x = np.array(list(initial_cnds.values()))
 x_true = np.array(list(initial_cnds.values()), dtype=float)
 x_est = x_true.copy()
 
-# The motion model, how it moves (precisley, add uncert. later)
-
-# for t in range(len(time)):
-
-    # x_dot = update_A(x, u, params, 0)
 
 
-    # for k in range(12): #static, will not have to calculate len every time.
-        # x[k] = x[k] + x_dot[k] * dt
-
-    # x_log[t] = x
-
-
-zref = 10 #idk wtf this means, its the designed altitude
 
 
 # Logs for comparing actual and estimated states
 x_true_log = np.zeros((len(time), 12))
 x_est_log = np.zeros((len(time), 12))
 
-# Use positive hover thrust
-u = np.array([params['m'] * params['g'] / 4, 0, 0, 0]) # have to  control this
+# Use positive hover thrust for initial control input
+u = np.array([params['m'] * params['g'], 0, 0, 0]) # Control this
 
-
-prbwrk = np.arange(0, 500, 0)
-
-x_max = W1.x_dim
-y_max = W1.y_dim
-
-xc = np.arange(0, x_max, res)
-yc = np.arange(0, y_max, res)
-xx, yy = np.meshgrid(xc,yc)
-#zz = W1.x_func(xx) + W1.y_func(yy) disable height map for now
 
 for t in range(len(time)):
 
@@ -336,6 +378,10 @@ for t in range(len(time)):
         Q, R, H, params, omegaR, dt
     )
 
+
+    camera_ft(x_est, W1)
+
+
     
     x_true_log[t] = x_true #base camera measurement off of true or estimate?
     x_est_log[t] = x_est
@@ -344,99 +390,29 @@ for t in range(len(time)):
 
     #create grid around x, + 50% FOV to either side
 
-    height = x_est[6]
-    x_pos = x_est[8]
-    y_pos = x_est[10]
-
-    field_x = 2*height*np.tan(np.deg2rad(fov_x)/2) #how many meters the camera can see in the horizontal direction, ect.
-    field_y = 2*height*np.tan(np.deg2rad(fov_y)/2) # calculate relative local field, then superimpose that onto the model
-
-    halfx = int(field_x/2)
-    halfy = int(field_y/2)
-
-    xvals = np.arange(-halfx, +halfx, res)
-    yvals = np.arange(-halfy, +halfy, res)
-
-    xvv, yvv = np.meshgrid(xvals, yvals)
-
-    cells_x = xvv + x_pos
-    cells_y = xvv + y_pos
-
-    prb = vis_confidence(xvv, yvv, zref, height) #calculates confidence for each cell, a confidence map for the relative frame
-
-    W1[cells_x][cells_y] += prb
-    
-    # ix = np.floor((cells_x - 0) / res).astype(int)
-    # iy = np.floor((cells_y - 0) / res).astype(int)
-    # valid = (P > thresh) & (ix >= 0) & (ix < nx) & (iy >= 0) & (iy < ny)
-    # np.maximum.at(W, (ix[valid], iy[valid]), P[valid])
-    
-
-
-    
-
-    
-
-print(xvals)
-print(yvals)
-
-
-
-plt.figure()
-
-prb_masked = np.ma.masked_less(prb, 1e-6)
-
-prbplt = plt.contourf(xvv, yvv, prb_masked)
-plt.colorbar(label = "Confidence")
 
 #plt.plot(xvv,yvv, marker='.', color='k', linestyle='none')
 
 
-
-
-print(x_true_log[t]) #do we measure noise for estimation?
-
-
-
-
-body2NED(90,30,60, [1,1,1])
-
-
-
-
-
-
-
-
-
-
-
-print(f"{field_x}, {field_y}")
-
-# particle filter code/ EKF code
-# EKF is faster, but particle filter is more accurate
-# imu = motion model, camera = measurement model
-
-# measurement model uncertainty
-
-# we have an initial position, p0
-
-
-
-
-
-
-
 plt.figure()
 
-h = plt.contourf(xx, yy, zz)
-plt.colorbar(label = 'Z-Position')
+plt.contourf(W1.xx, W1.yy, W1.confidence, cmap='plasma')
+plt.colorbar(label = 'Confidence')
 plt.axis('scaled')
-plt.title('Discretized Workspace')
+plt.title('Confidence Function')
 plt.xlabel('X-Position')
 plt.ylabel('Y-Position')
-plt.savefig('contwrk.png', dpi = 600)
-# plt.show()
+
+
+# plt.figure() # Terrain Map
+# h = plt.contourf(W1.xx, W1.yy, W1.zz)
+# plt.colorbar(label = 'Z-Position')
+# plt.axis('scaled')
+# plt.title('Discretized Workspace Terrain')
+# plt.xlabel('X-Position')
+# plt.ylabel('Y-Position')
+# plt.savefig('contwrk.png', dpi = 600)
+
 
 
 # Actual X-position agaisnt the EKF estimate
@@ -466,6 +442,6 @@ plt.grid(True)
 
 plt.figure()
 plt.plot(x_true_log[:, 8], x_true_log[:, 10])
-
-
+plt.title("X-Y graph")
 plt.show()
+
