@@ -1,0 +1,199 @@
+import ast
+import os
+import tkinter as tk
+from tkinter import ttk, messagebox
+
+import numpy as np
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+from matplotlib.figure import Figure
+
+
+STEPS_PER_FRAME = 10  # sim steps between redraws
+
+
+def load_work():
+    """Run work.py up to (not including) its main sim loop, and return its namespace.
+    Gives us the functions, classes and parameters without running the sim or showing plots."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "work.py")
+    tree = ast.parse(open(path).read(), path)
+    for i, node in enumerate(tree.body):
+        if isinstance(node, ast.For):
+            tree.body = tree.body[:i]
+            break
+    ns = {"__name__": "work"}
+    exec(compile(tree, path, "exec"), ns)
+    return ns
+
+
+wk = load_work()
+
+
+class SimGUI:
+
+    def __init__(self, root):
+        self.root = root
+        root.title("Quadrotor Coverage Sim")
+        self.running = False
+
+        # --- Left: controls ---
+        panel = ttk.Frame(root, padding=8)
+        panel.pack(side=tk.LEFT, fill=tk.Y)
+
+        self.entries = {}
+        ttk.Label(panel, text="Simulation", font=("", 11, "bold")).pack(anchor="w")
+        self._entry(panel, "sim time (s)", wk["timeArr"][-1] + wk["dt"])
+
+        ttk.Label(panel, text="Initial conditions", font=("", 11, "bold")).pack(anchor="w", pady=(8, 0))
+        for k, v in wk["initial_cnds"].items():
+            self._entry(panel, k, v)
+
+        btns = ttk.Frame(panel)
+        btns.pack(anchor="w", pady=8)
+        ttk.Button(btns, text="Start", command=self.start).pack(side=tk.LEFT)
+        ttk.Button(btns, text="Pause", command=self.pause).pack(side=tk.LEFT)
+        ttk.Button(btns, text="Reset", command=self.reset).pack(side=tk.LEFT)
+
+        self.status = tk.StringVar(value="Ready")
+        ttk.Label(panel, textvariable=self.status, justify=tk.LEFT).pack(anchor="w")
+
+        # --- Right: plots ---
+        self.fig = Figure(figsize=(11, 6))
+        self.ax_map = self.fig.add_subplot(1, 2, 1)
+        self.ax_x = self.fig.add_subplot(2, 2, 2)
+        self.ax_err = self.fig.add_subplot(2, 2, 4)
+        self.canvas = FigureCanvasTkAgg(self.fig, master=root)
+        NavigationToolbar2Tk(self.canvas, root)
+        self.canvas.get_tk_widget().pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+
+        self.reset()
+
+    def _entry(self, parent, name, default):
+        row = ttk.Frame(parent)
+        row.pack(anchor="w", fill=tk.X)
+        ttk.Label(row, text=name, width=12).pack(side=tk.LEFT)
+        e = ttk.Entry(row, width=10)
+        e.insert(0, f"{default:g}")
+        e.pack(side=tk.LEFT)
+        self.entries[name] = e
+
+    # --- Sim state ---
+
+    def reset(self):
+        self.running = False
+        try:
+            T = float(self.entries["sim time (s)"].get())
+            x0 = [float(self.entries[k].get()) for k in wk["initial_cnds"]]
+        except ValueError as e:
+            messagebox.showerror("Bad input", str(e))
+            return
+
+        W1 = wk["W1"]
+        self.W = wk["workspace"](W1.x_dim, W1.y_dim, W1.x_func, W1.y_func, W1.res)
+        self.timeArr = np.arange(0, T, wk["dt"])
+        self.x_true = np.array(x0, dtype=float)
+        self.x_est = self.x_true.copy()
+        self.P = wk["P"].copy()
+        self.u = wk["u"].copy()
+        self.k = 0
+        self.true_log = np.zeros((len(self.timeArr), 12))
+        self.est_log = np.zeros((len(self.timeArr), 12))
+
+        self._setup_plots()
+        self.status.set("Ready")
+
+    def _setup_plots(self):
+        for ax in (self.ax_map, self.ax_x, self.ax_err):
+            ax.clear()
+
+        self.img = self.ax_map.imshow(self.W.confidence.T, origin="lower", cmap="plasma", vmin=0.5, vmax=1,
+                                      extent=[0, self.W.x_dim, 0, self.W.y_dim])
+        if not hasattr(self, "cbar"):
+            self.cbar = self.fig.colorbar(self.img, ax=self.ax_map, label="Confidence", shrink=0.7)
+        (self.l_true,) = self.ax_map.plot([], [], "c-", lw=1, label="Actual")
+        (self.l_est,) = self.ax_map.plot([], [], "w:", lw=1, label="EKF")
+        (self.l_drone,) = self.ax_map.plot([], [], "ro", ms=5)
+        self.ax_map.set_title("Confidence map")
+        self.ax_map.set_xlabel("X-Position")
+        self.ax_map.set_ylabel("Y-Position")
+        self.ax_map.legend(loc="upper right", fontsize=7)
+
+        (self.l_x,) = self.ax_x.plot([], [], label="Actual X-position")
+        (self.l_xe,) = self.ax_x.plot([], [], "--", label="EKF Estimate")
+        self.ax_x.set_xlim(0, self.timeArr[-1])
+        self.ax_x.set_ylabel("X-position (m)")
+        self.ax_x.set_title("EKF Position Estimation")
+        self.ax_x.grid(True)
+        self.ax_x.legend(fontsize=7)
+
+        (self.l_ex,) = self.ax_err.plot([], [])
+        self.ax_err.set_xlim(0, self.timeArr[-1])
+        self.ax_err.set_xlabel("Time (s)")
+        self.ax_err.set_ylabel("X-position error (m)")
+        self.ax_err.grid(True)
+
+        self.fig.tight_layout()
+        self.canvas.draw()
+
+    def start(self):
+        if self.k >= len(self.timeArr):
+            self.reset()
+        if not self.running:
+            self.running = True
+            self._loop()
+
+    def pause(self):
+        self.running = False
+
+    def _step(self):
+        # Same loop body as work.py
+        params, Q, R, H, dt, omegaR = (wk[n] for n in ("params", "Q", "R", "H", "dt", "omegaR"))
+
+        self.x_true = self.x_true + wk["update_A"](self.x_true, self.u, params, omegaR) * dt \
+            + np.random.multivariate_normal(np.zeros(12), Q)
+        measurement = H @ self.x_true + np.random.multivariate_normal(np.zeros(6), R)
+        self.x_est, self.P = wk["EKF"](self.x_est, self.P, self.u, measurement, Q, R, H, params, omegaR, dt)
+        wk["camera_ft"](self.x_est, self.W, wk["C1"])
+
+        self.true_log[self.k] = self.x_true
+        self.est_log[self.k] = self.x_est
+        self.k += 1
+
+    def _loop(self):
+        if not self.running:
+            return
+        for _ in range(STEPS_PER_FRAME):
+            if self.k >= len(self.timeArr):
+                self.running = False
+                break
+            self._step()
+        self._redraw()
+        if self.running:
+            self.root.after(1, self._loop)
+
+    def _redraw(self):
+        k = self.k
+        t = self.timeArr[:k]
+        tr, es = self.true_log[:k], self.est_log[:k]
+
+        self.img.set_data(self.W.confidence.T)
+        self.l_true.set_data(tr[:, 8], tr[:, 10])
+        self.l_est.set_data(es[:, 8], es[:, 10])
+        self.l_drone.set_data([tr[-1, 8]], [tr[-1, 10]])
+
+        self.l_x.set_data(t, tr[:, 8])
+        self.l_xe.set_data(t, es[:, 8])
+        self.l_ex.set_data(t, tr[:, 8] - es[:, 8])
+        for ax in (self.ax_x, self.ax_err):
+            ax.relim()
+            ax.autoscale_view(scalex=False)
+
+        self.status.set(f"t = {t[-1]:.2f} s\n"
+                        f"x, y, z = {tr[-1, 8]:.1f}, {tr[-1, 10]:.1f}, {tr[-1, 6]:.1f}\n"
+                        f"avg confidence = {np.mean(self.W.confidence):.4f}")
+        self.canvas.draw_idle()
+
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    SimGUI(root)
+    root.mainloop()
