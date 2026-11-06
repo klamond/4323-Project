@@ -9,6 +9,7 @@ from matplotlib.figure import Figure
 
 
 STEPS_PER_FRAME = 10  # sim steps between redraws
+MAX_RANGE = 1000  # m, stop the run if the drone gets this far from the origin
 
 # Plotted on the EKF states tab: (name, unit, state index). The rate is always at index + 1.
 STATES = [
@@ -50,12 +51,29 @@ class SimGUI:
         panel.pack(side=tk.LEFT, fill=tk.Y)
 
         self.entries = {}
-        ttk.Label(panel, text="Simulation", font=("", 11, "bold")).pack(anchor="w")
-        self._entry(panel, "sim time (s)", wk["timeArr"][-1] + wk["dt"])
+        cols = ttk.Frame(panel)
+        cols.pack(anchor="w")
+        left = ttk.Frame(cols)
+        left.pack(side=tk.LEFT, anchor="n")
+        right = ttk.Frame(cols)
+        right.pack(side=tk.LEFT, anchor="n", padx=(12, 0))
 
-        ttk.Label(panel, text="Initial conditions", font=("", 11, "bold")).pack(anchor="w", pady=(8, 0))
+        ttk.Label(left, text="Simulation", font=("", 11, "bold")).pack(anchor="w")
+        self._entry(left, "sim time (s)", wk["timeArr"][-1] + wk["dt"])
+
+        ttk.Label(left, text="Initial conditions", font=("", 11, "bold")).pack(anchor="w", pady=(8, 0))
         for k, v in wk["initial_cnds"].items():
-            self._entry(panel, k, v)
+            self._entry(left, k, v)
+
+        ttk.Label(right, text="Target", font=("", 11, "bold")).pack(anchor="w")
+        self._entry(right, "xd (m)", wk["xd"])
+        self._entry(right, "yd (m)", wk["yd"])
+        self._entry(right, "zd (m)", wk["zd"])
+        self._entry(right, "yawd (deg)", np.rad2deg(wk["yawd"]))
+
+        ttk.Label(right, text="Gains", font=("", 11, "bold")).pack(anchor="w", pady=(8, 0))
+        for k, v in vars(wk["GAINS"]).items():
+            self._entry(right, k, v)
 
         btns = ttk.Frame(panel)
         btns.pack(anchor="w", pady=8)
@@ -134,6 +152,9 @@ class SimGUI:
         try:
             T = float(self.entries["sim time (s)"].get())
             x0 = [float(self.entries[k].get()) for k in wk["initial_cnds"]]
+            self.target = (float(self.entries["xd (m)"].get()), float(self.entries["yd (m)"].get()),
+                           float(self.entries["zd (m)"].get()), np.deg2rad(float(self.entries["yawd (deg)"].get())))
+            self.gains = wk["gains"](**{k: float(self.entries[k].get()) for k in vars(wk["GAINS"])})
         except ValueError as e:
             messagebox.showerror("Bad input", str(e))
             return
@@ -146,6 +167,7 @@ class SimGUI:
         self.P = wk["P"].copy()
         self.u = wk["u"].copy()
         self.k = 0
+        self.diverged = False
         self.true_log = np.zeros((len(self.timeArr), 12))
         self.est_log = np.zeros((len(self.timeArr), 12))
 
@@ -163,6 +185,7 @@ class SimGUI:
         (self.l_true,) = self.ax_map.plot([], [], "c-", lw=1, label="Actual")
         (self.l_est,) = self.ax_map.plot([], [], "w:", lw=1, label="EKF")
         (self.l_drone,) = self.ax_map.plot([], [], "ro", ms=5)
+        self.ax_map.plot([self.target[0]], [self.target[1]], "gx", ms=8, label="Target", scalex=False, scaley=False)
         self.ax_map.set_title("Confidence map")
         self.ax_map.set_xlabel("X-Position")
         self.ax_map.set_ylabel("Y-Position")
@@ -192,7 +215,7 @@ class SimGUI:
         self.canvas_states.draw_idle()
 
     def start(self):
-        if self.k >= len(self.timeArr):
+        if self.k >= len(self.timeArr) or self.diverged:
             self.reset()
         if not self.running:
             self.running = True
@@ -202,18 +225,27 @@ class SimGUI:
         self.running = False
 
     def _step(self):
-        # Same loop body as work.py
+        """One pass of the work.py loop body. Returns False if the drone has flown away."""
         params, Q, R, H, dt, omegaR = (wk[n] for n in ("params", "Q", "R", "H", "dt", "omegaR"))
+
+        self.u = wk["controller"](*self.target, self.x_est, params, self.gains)
 
         self.x_true = self.x_true + wk["update_A"](self.x_true, self.u, params, omegaR) * dt \
             + np.random.multivariate_normal(np.zeros(12), Q)
         measurement = H @ self.x_true + np.random.multivariate_normal(np.zeros(6), R)
         self.x_est, self.P = wk["EKF"](self.x_est, self.P, self.u, measurement, Q, R, H, params, omegaR, dt)
+
+        # camera_ft's footprint grows with height, so a flyaway would otherwise stall or crash the GUI
+        pos = np.concatenate((self.x_true[[6, 8, 10]], self.x_est[[6, 8, 10]]))
+        if not np.all(np.abs(pos) < MAX_RANGE):  # also catches nan
+            return False
+
         wk["camera_ft"](self.x_est, self.W, wk["C1"])
 
         self.true_log[self.k] = self.x_true
         self.est_log[self.k] = self.x_est
         self.k += 1
+        return True
 
     def _loop(self):
         if not self.running:
@@ -222,7 +254,10 @@ class SimGUI:
             if self.k >= len(self.timeArr):
                 self.running = False
                 break
-            self._step()
+            if not self._step():
+                self.running = False
+                self.diverged = True
+                break
         self._redraw()
         if self.running:
             self.root.after(1, self._loop)
@@ -242,7 +277,8 @@ class SimGUI:
 
         self.status.set(f"t = {t[-1]:.2f} s\n"
                         f"x, y, z = {tr[-1, 8]:.1f}, {tr[-1, 10]:.1f}, {tr[-1, 6]:.1f}\n"
-                        f"avg confidence = {np.mean(self.W.confidence):.4f}")
+                        f"avg confidence = {np.mean(self.W.confidence):.4f}"
+                        + ("\nDIVERGED: tune gains, Reset" if self.diverged else ""))
 
     def _redraw_overview(self, t, tr, es):
         self.img.set_data(self.W.confidence.T)

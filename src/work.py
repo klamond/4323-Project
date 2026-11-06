@@ -273,8 +273,23 @@ def camera_ft(state_vec, workspace_c, camera_c):
     np.maximum.at(workspace_c.confidence, (ix[valid], iy[valid]), prb[valid]) # Max fusion, as required by the assignment
 
 
-start_time = time.time()
+def controller(xd, yd, zd, yawd, states, params, GAINS):
+    #----OUTER LOOP----#
+    ax = GAINS.kpx * (xd - states[8]) - GAINS.kdx * states[9]    # desired x accel (PD)
+    ay = GAINS.kpy * (yd - states[10]) - GAINS.kdy * states[11]  # desired y accel (PD)
+    rolld = np.clip((-np.sin(states[4]) * ax + np.cos(states[4]) * ay) / params['g'], -0.3, 0.3)
+    pitchd = np.clip(-(np.cos(states[4]) * ax + np.sin(states[4]) * ay) / params['g'], -0.3, 0.3)
 
+
+    #----INNER LOOP----#
+    u1 = params['m'] * (params['g'] - (GAINS.kpz * (zd - states[6]) - GAINS.kdz * states[7]))
+    u2 = params['i_xx'] * (GAINS.kproll * (rolld - states[0]) - GAINS.kdroll * states[1])
+    u3 = params['i_yy'] * (GAINS.kppitch * (pitchd - states[2]) - GAINS.kdpitch * states[3])
+    u4 = params['i_zz'] * (GAINS.kpyaw * (yawd - states[4]) - GAINS.kdyaw * states[5])
+
+    return np.array([u1, u2, u3, u4])
+
+start_time = time.time()
     
 # Initial Variable declarations
 
@@ -290,26 +305,53 @@ params = {
     'k_m' : 9e-7, #moment/drag coeff
 }
 
+class gains:
+    def __init__(self, kpx, kdx, kpy, kdy, kpz, kdz, kpyaw, kdyaw, kproll, kdroll, kppitch, kdpitch):
+        # Outer loop 
+        self.kpx = kpx
+        self.kdx = kdx
+        self.kpy = kpy
+        self.kdy = kdy
+        self.kpz = kpz
+        self.kdz = kdz
+
+        # Inner loop 
+        self.kpyaw = kpyaw
+        self.kdyaw = kdyaw
+        self.kproll = kproll
+        self.kdroll = kdroll
+        self.kppitch = kppitch
+        self.kdpitch = kdpitch
+
+
+
+
 initial_cnds = {
     'roll' : 0, # in radians
     'roll_d' : 0,
-    'pitch' : 0.1,
+    'pitch' : 0.0,
     'pitch_d' : 0,
     'yaw' : 0,
     'yaw_d' : 0,
     'z' : 10,
     'z_d' : 0,
-    'x' : 250,
+    'x' : 200,
     'x_d' : 0,
-    'y' : 250,
+    'y' : 200,
     'y_d' : 0,
 }
+    #test
+xd = 250
+yd = 250
+zd = 10
+yawd = np.deg2rad(275)
 
 
 # I/O, interface with objects
 
 C1 = camera(fovx=81.8, fovy=66, variance=10, zref=15)
 W1 = workspace(500, 500, lambda x : (x*0.04)**2, lambda y : - (y*0.04)**2, 1)
+GAINS = gains(kpx=1.0, kdx=1.0, kpy=1.0, kdy=1.0, kpz=1.0, kdz=1.0, kpyaw=1.0, kdyaw=1.0, kproll=1.0, kdroll=1.0, kppitch=1.0, kdpitch=1.0)
 
 # Initial state estimation uncertainty, initial Sigma
 P = np.eye(12) * 0.1
@@ -358,7 +400,11 @@ x_est_log = np.zeros((len(timeArr), 12))
 u = np.array([params['m'] * params['g'], 0, 0, 0]) # Control this
 
 
+
 for t in range(len(timeArr)):
+
+
+    u = controller(xd, yd, zd, yawd, x_est, params, GAINS)
 
     
     x_true = x_true + update_A( #update position
