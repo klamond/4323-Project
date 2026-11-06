@@ -10,6 +10,16 @@ from matplotlib.figure import Figure
 
 STEPS_PER_FRAME = 10  # sim steps between redraws
 
+# Plotted on the EKF states tab: (name, unit, state index). The rate is always at index + 1.
+STATES = [
+    ("Roll", "rad", 0),
+    ("Pitch", "rad", 2),
+    ("Yaw", "rad", 4),
+    ("Z", "m", 6),
+    ("X", "m", 8),
+    ("Y", "m", 10),
+]
+
 
 def load_work():
     """Run work.py up to (not including) its main sim loop, and return its namespace.
@@ -57,15 +67,56 @@ class SimGUI:
         ttk.Label(panel, textvariable=self.status, justify=tk.LEFT).pack(anchor="w")
 
         # --- Right: plots ---
+        self.tabs = ttk.Notebook(root)
+        self.tabs.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+        tab_overview = ttk.Frame(self.tabs)
+        tab_states = ttk.Frame(self.tabs)
+        self.tabs.add(tab_overview, text="Overview")
+        self.tabs.add(tab_states, text="EKF states")
+
         self.fig = Figure(figsize=(11, 6))
         self.ax_map = self.fig.add_subplot(1, 2, 1)
         self.ax_x = self.fig.add_subplot(2, 2, 2)
         self.ax_err = self.fig.add_subplot(2, 2, 4)
-        self.canvas = FigureCanvasTkAgg(self.fig, master=root)
-        NavigationToolbar2Tk(self.canvas, root)
-        self.canvas.get_tk_widget().pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+        self.canvas = FigureCanvasTkAgg(self.fig, master=tab_overview)
+        NavigationToolbar2Tk(self.canvas, tab_overview)
+        self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+        self._build_states_tab(tab_states)
+        self.tabs.bind("<<NotebookTabChanged>>", lambda e: self._redraw())
 
         self.reset()
+
+    def _build_states_tab(self, parent):
+        """One column per variable: value, its error, rate, its error."""
+        self.fig_states = Figure(figsize=(11, 6))
+        axes = self.fig_states.subplots(4, len(STATES), sharex=True)
+        self.axes_states = axes
+        self.state_lines = []  # (state index, actual line, EKF line, error line)
+
+        for col, (name, unit, idx) in enumerate(STATES):
+            for row, i, title, u in ((0, idx, name, unit), (2, idx + 1, f"{name} rate", f"{unit}/s")):
+                ax, ax_err = axes[row, col], axes[row + 1, col]
+                (l_true,) = ax.plot([], [], lw=1, label="Actual")
+                (l_est,) = ax.plot([], [], "--", lw=1, label="EKF Estimate")
+                (l_err,) = ax_err.plot([], [], lw=1, color="C2")
+                ax.set_title(f"{title} ({u})", fontsize=8)
+                ax_err.set_title("error", fontsize=7)
+                self.state_lines.append((i, l_true, l_est, l_err))
+
+        for ax in axes.flat:
+            ax.grid(True)
+            ax.tick_params(labelsize=6)
+            ax.yaxis.get_offset_text().set_fontsize(6)
+        for ax in axes[-1]:
+            ax.set_xlabel("Time (s)", fontsize=7)
+
+        self.fig_states.legend(handles=[l_true, l_est], loc="upper center", ncol=2, fontsize=8)
+        self.fig_states.subplots_adjust(left=0.04, right=0.99, top=0.91, bottom=0.07, wspace=0.35, hspace=0.4)
+
+        self.canvas_states = FigureCanvasTkAgg(self.fig_states, master=parent)
+        NavigationToolbar2Tk(self.canvas_states, parent)
+        self.canvas_states.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
     def _entry(self, parent, name, default):
         row = ttk.Frame(parent)
@@ -134,6 +185,12 @@ class SimGUI:
         self.fig.tight_layout()
         self.canvas.draw()
 
+        for _, *lines in self.state_lines:
+            for line in lines:
+                line.set_data([], [])
+        self.axes_states[0, 0].set_xlim(0, self.timeArr[-1])  # shared by every axis on the tab
+        self.canvas_states.draw_idle()
+
     def start(self):
         if self.k >= len(self.timeArr):
             self.reset()
@@ -172,9 +229,22 @@ class SimGUI:
 
     def _redraw(self):
         k = self.k
+        if k == 0:
+            return
         t = self.timeArr[:k]
         tr, es = self.true_log[:k], self.est_log[:k]
 
+        # Only the visible tab is drawn; the states tab has too many axes to redraw every frame
+        if self.tabs.index("current") == 1:
+            self._redraw_states(t, tr, es)
+        else:
+            self._redraw_overview(t, tr, es)
+
+        self.status.set(f"t = {t[-1]:.2f} s\n"
+                        f"x, y, z = {tr[-1, 8]:.1f}, {tr[-1, 10]:.1f}, {tr[-1, 6]:.1f}\n"
+                        f"avg confidence = {np.mean(self.W.confidence):.4f}")
+
+    def _redraw_overview(self, t, tr, es):
         self.img.set_data(self.W.confidence.T)
         self.l_true.set_data(tr[:, 8], tr[:, 10])
         self.l_est.set_data(es[:, 8], es[:, 10])
@@ -186,11 +256,17 @@ class SimGUI:
         for ax in (self.ax_x, self.ax_err):
             ax.relim()
             ax.autoscale_view(scalex=False)
-
-        self.status.set(f"t = {t[-1]:.2f} s\n"
-                        f"x, y, z = {tr[-1, 8]:.1f}, {tr[-1, 10]:.1f}, {tr[-1, 6]:.1f}\n"
-                        f"avg confidence = {np.mean(self.W.confidence):.4f}")
         self.canvas.draw_idle()
+
+    def _redraw_states(self, t, tr, es):
+        for i, l_true, l_est, l_err in self.state_lines:
+            l_true.set_data(t, tr[:, i])
+            l_est.set_data(t, es[:, i])
+            l_err.set_data(t, tr[:, i] - es[:, i])
+        for ax in self.axes_states.flat:
+            ax.relim()
+            ax.autoscale_view(scalex=False)
+        self.canvas_states.draw_idle()
 
 
 if __name__ == "__main__":
