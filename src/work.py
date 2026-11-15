@@ -285,7 +285,7 @@ def controller(xd, yd, zd, yawd, states, params, GAINS):
     u1 = params['m'] * (params['g'] - (GAINS.kpz * (zd - states[6]) - GAINS.kdz * states[7]))
     u2 = params['i_xx'] * (GAINS.kproll * (rolld - states[0]) - GAINS.kdroll * states[1])
     u3 = params['i_yy'] * (GAINS.kppitch * (pitchd - states[2]) - GAINS.kdpitch * states[3])
-    u4 = params['i_zz'] * (GAINS.kpyaw * (yawd - states[4]) - GAINS.kdyaw * states[5])
+     u4 = params['i_zz'] * (GAINS.kpyaw * np.arctan2(np.sin(yawd - states[4]), np.cos(yawd - states[4])) - GAINS.kdyaw * states[5])
 
     return np.array([u1, u2, u3, u4])
 
@@ -351,7 +351,7 @@ yawd = np.deg2rad(275)
 
 C1 = camera(fovx=81.8, fovy=66, variance=10, zref=15)
 W1 = workspace(500, 500, lambda x : (x*0.04)**2, lambda y : - (y*0.04)**2, 1)
-GAINS = gains(kpx=1.0, kdx=1.0, kpy=1.0, kdy=1.0, kpz=1.0, kdz=1.0, kpyaw=1.0, kdyaw=1.0, kproll=1.0, kdroll=1.0, kppitch=1.0, kdpitch=1.0)
+GAINS = gains(kpx=1.058, kdx=2.543, kpy=0.987, kdy=1.391, kpz=28.013, kdz=14.465, kpyaw=150.0, kdyaw=17.146, kproll=150.0, kdroll=17.146, kppitch=150.0, kdpitch=17.146)
 
 # Initial state estimation uncertainty, initial Sigma
 P = np.eye(12) * 0.1
